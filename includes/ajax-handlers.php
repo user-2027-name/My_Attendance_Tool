@@ -225,7 +225,19 @@ function mat_request_password_reset_handler() {
 
 
 // =========================================================
-//  打刻処理（出勤・退勤・休憩のみ）
+//  打刻処理（出勤・退勤・休憩）
+//
+//  【排他制御の方針】
+//  ・出勤打刻のみ INSERT なので、PC・スマホからの二重打刻が発生しうる。
+//  ・退勤・休憩は当日の出勤行を UPDATE するだけなので重複は起きない。
+//
+//  【実装：MySQL Advisory Lock】
+//  ・出勤打刻時に GET_LOCK('mat_punch_{id}_{date}', 5) を取得。
+//  ・ロック保持中は他のリクエストが同じ社員・同日のロックを取れず待機 or タイムアウト。
+//  ・ロック取得後に「当日出勤レコードが存在しないか」を再確認してから INSERT。
+//  ・処理完了後（または途中終了時）に RELEASE_LOCK で解放。
+//    ※ PHP リクエスト終了時に MySQL 接続が切れれば自動解放されるが明示的に解放する。
+//  ・既存レコード（本修正以前の重複データ）はそのまま保持され影響を受けない。
 // =========================================================
 
 add_action( 'wp_ajax_mat_attendance_update',        'mat_attendance_update_handler' );
@@ -289,46 +301,104 @@ function mat_attendance_update_handler() {
         'timestamp'            => $now,
     );
 
-    // 退勤・休憩は出勤打刻チェック
-    if ( in_array( $label, array( '退勤', '休憩' ), true ) ) {
-        $today_record = $wpdb->get_row( $wpdb->prepare(
-            "SELECT id, item_name FROM " . MAT_LOG_TABLE
-            . " WHERE registered_user_id = %d AND timestamp LIKE %s"
-            . " ORDER BY timestamp DESC LIMIT 1",
+    // -----------------------------------------------------------------
+    //  出勤打刻：Advisory Lock で二重打刻を防止
+    // -----------------------------------------------------------------
+    if ( $label === '出勤' ) {
+
+        // ロックキー例: "mat_punch_7_2026-05-13"
+        // ・プラグイン固有プレフィックス "mat_punch_" で他プラグインと干渉しない
+        // ・社員ID + 日付の組み合わせで同一人物の同日リクエストのみをシリアライズ
+        $lock_key = 'mat_punch_' . $emp_master_id . '_' . $today;
+
+        // ロック取得（最大5秒待機）
+        // 戻り値: 1=取得成功 / 0=タイムアウト / NULL=エラー
+        $locked = $wpdb->get_var(
+            $wpdb->prepare( "SELECT GET_LOCK(%s, 5)", $lock_key )
+        );
+
+        if ( $locked !== '1' && $locked !== 1 ) {
+            // タイムアウト or エラー（別リクエストが長時間ロックを保持）
+            wp_send_json_error( '処理が混み合っています。しばらく待ってから再度お試しください。' );
+            return;
+        }
+
+        // ── ロック取得成功 ──────────────────────────────────────────
+        // ロック保持中に当日の出勤レコードを確認する（TOC/TOU防止）
+        $already_clocked_in = $wpdb->get_var( $wpdb->prepare(
+            "SELECT id FROM " . MAT_LOG_TABLE
+            . " WHERE registered_user_id = %d"
+            . "   AND timestamp LIKE %s"
+            . "   AND item_name LIKE '出勤%%'"
+            . " LIMIT 1",
             $emp_master_id,
             $today . '%'
         ) );
 
-        if ( ! $today_record || ! preg_match( '/出勤:\s*\d{2}:\d{2}/', $today_record->item_name ) ) {
-            wp_send_json_error( '出勤打刻がありません。先に出勤を打刻してください。' );
+        if ( $already_clocked_in ) {
+            // 既に出勤済み → ロック解放してエラー返却
+            $wpdb->query( $wpdb->prepare( "SELECT RELEASE_LOCK(%s)", $lock_key ) );
+            wp_send_json_error( '本日はすでに出勤打刻済みです。' );
+            return;
         }
+
+        // 出勤レコードを INSERT
+        $result = $wpdb->insert( MAT_LOG_TABLE, $insert_data );
+
+        // ロックを明示的に解放
+        $wpdb->query( $wpdb->prepare( "SELECT RELEASE_LOCK(%s)", $lock_key ) );
+
+        if ( $result === false ) {
+            wp_send_json_error( 'DB保存エラー: ' . $wpdb->last_error );
+            return;
+        }
+
+        wp_send_json_success( mat_get_grouped_data( $emp_master_id, date( 'Y-m' ) ) );
+        return;
     }
 
-    if ( $label === '出勤' ) {
-        $result = $wpdb->insert( MAT_LOG_TABLE, $insert_data );
-    } else {
-        $existing = $wpdb->get_row( $wpdb->prepare(
-            "SELECT id, item_name FROM " . MAT_LOG_TABLE
-            . " WHERE registered_user_id = %d AND item_name LIKE '出勤%%' AND timestamp LIKE %s"
-            . " ORDER BY timestamp DESC LIMIT 1",
-            $emp_master_id,
-            $today . '%'
-        ) );
+    // -----------------------------------------------------------------
+    //  退勤・休憩：当日の出勤行に追記（UPDATE）
+    //  ※ UPDATE のみなので新規行は増えない → Advisory Lock 不要
+    // -----------------------------------------------------------------
 
-        if ( $existing ) {
-            $new_item_name = $existing->item_name . ' | ' . $item;
-            $result = $wpdb->update(
-                MAT_LOG_TABLE,
-                array( 'item_name' => $new_item_name ),
-                array( 'id' => $existing->id )
-            );
-        } else {
-            $result = $wpdb->insert( MAT_LOG_TABLE, $insert_data );
-        }
+    // 出勤打刻の存在確認（退勤・休憩の事前チェック）
+    $today_record = $wpdb->get_row( $wpdb->prepare(
+        "SELECT id, item_name FROM " . MAT_LOG_TABLE
+        . " WHERE registered_user_id = %d AND timestamp LIKE %s"
+        . " ORDER BY timestamp DESC LIMIT 1",
+        $emp_master_id,
+        $today . '%'
+    ) );
+
+    if ( ! $today_record || ! preg_match( '/出勤:\s*\d{2}:\d{2}/', $today_record->item_name ) ) {
+        wp_send_json_error( '出勤打刻がありません。先に出勤を打刻してください。' );
+        return;
+    }
+
+    // 出勤行を特定して追記
+    $existing = $wpdb->get_row( $wpdb->prepare(
+        "SELECT id, item_name FROM " . MAT_LOG_TABLE
+        . " WHERE registered_user_id = %d AND item_name LIKE '出勤%%' AND timestamp LIKE %s"
+        . " ORDER BY timestamp DESC LIMIT 1",
+        $emp_master_id,
+        $today . '%'
+    ) );
+
+    if ( $existing ) {
+        $new_item_name = $existing->item_name . ' | ' . $item;
+        $result = $wpdb->update(
+            MAT_LOG_TABLE,
+            array( 'item_name' => $new_item_name ),
+            array( 'id' => $existing->id )
+        );
+    } else {
+        $result = $wpdb->insert( MAT_LOG_TABLE, $insert_data );
     }
 
     if ( $result === false ) {
         wp_send_json_error( 'DB保存エラー: ' . $wpdb->last_error );
+        return;
     }
 
     wp_send_json_success( mat_get_grouped_data( $emp_master_id, date( 'Y-m' ) ) );

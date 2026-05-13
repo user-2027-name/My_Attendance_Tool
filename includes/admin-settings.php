@@ -7,8 +7,8 @@ if ( ! defined( 'ABSPATH' ) ) exit;
 add_action( 'admin_menu', 'mat_register_admin_menu' );
 function mat_register_admin_menu() {
     add_menu_page(
-        '勤怠管理ツール',
-        '勤怠管理',
+        '打刻管理ツール',
+        '打刻管理',
         'manage_options',
         'my-attendance-settings',
         'mat_history_page_render',
@@ -17,8 +17,8 @@ function mat_register_admin_menu() {
     );
     add_submenu_page(
         'my-attendance-settings',
-        '勤怠履歴',
-        '勤怠履歴',
+        '打刻履歴',
+        '打刻履歴',
         'manage_options',
         'my-attendance-settings',
         'mat_history_page_render'

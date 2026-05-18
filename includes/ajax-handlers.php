@@ -159,10 +159,15 @@ function mat_attendance_update_handler() {
         }
 
         $time_val = ( $label === '休憩' ) ? sanitize_text_field( $_POST['break_hhmm'] ?? '00:00' ) : current_time( 'H:i' );
-        $new_item = $existing_row->item_name . ' | ' . $label . ': ' . $time_val;
-        if ( ! empty( $note ) ) {
-            $new_item .= ' | 備考: ' . $note;
+        if ( $label === '休憩' ) {
+            $base     = preg_replace( '/\s*\|\s*休憩:\s*\d{2}:\d{2}/', '', $existing_row->item_name );
+            $new_item = rtrim( $base ) . ' | 休憩: ' . $time_val;
+        } else {
+            $new_item = $existing_row->item_name . ' | ' . $label . ': ' . $time_val;
         }
+        if ( ! empty( $note ) ) {
+             $new_item .= ' | 備考: ' . $note;
+         }
 
         $ok = $wpdb->update(
             MAT_LOG_TABLE,
@@ -172,8 +177,6 @@ function mat_attendance_update_handler() {
             array( '%d' )
         );
         if ( $ok === false ) {
-            error_log( '[MAT] 休憩/退勤 update失敗 id=' . $existing_id . ' error=' . $wpdb->last_error );
-            error_log( '[MAT] new_item=' . $new_item );
             wp_send_json_error( '打刻の保存に失敗しました。管理者にお問い合わせください。' );
         }
     }

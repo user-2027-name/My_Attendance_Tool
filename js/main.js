@@ -16,6 +16,7 @@ jQuery(document).ready(function ($) {
         empMasterId: 0,
         employeeCode: '',
         userName: '',
+        hasBreak: false,
     };
     var editTargetId = null;
 
@@ -40,7 +41,14 @@ jQuery(document).ready(function ($) {
         return String(Math.floor(mins / 60)).padStart(2, '0')
             + ':' + String(mins % 60).padStart(2, '0');
     }
-
+    function showToast(msg, type) {
+        var $toast = $('<div class="mat-toast mat-toast-' + (type || 'success') + '">' + msg + '</div>');
+        $('body').append($toast);
+        setTimeout(function () {
+            $toast.addClass('mat-toast-fadeout');
+            setTimeout(function () { $toast.remove(); }, 500);
+        }, 2500);
+    }
     function showSection(id) {
         $('.mat-section').hide();
         $('#' + id).show();
@@ -326,7 +334,10 @@ jQuery(document).ready(function ($) {
         if (label === '休憩') {
             postData.break_hhmm = minsToHHMM($('#mat-break-slider').val());
         }
-
+        // すでに登録済みの場合の確認
+        if (label === '休憩' && session.hasBreak) {
+            if (!confirm('すでに休憩が登録されています。上書きしますか？')) return;
+        }
         var $btn = $(this);
         btnLoading($btn, true);
 
@@ -339,9 +350,13 @@ jQuery(document).ready(function ($) {
             isSubmitting = false;
 
             if (res.success) {
+                var labelNames = { '出勤': '出勤', '退勤': '退勤', '休憩': '休憩' };
+                showToast(labelNames[label] + 'を登録しました ✓', 'success');
                 $('#mat-note').val('');
                 renderLogs(res.data);
+                refreshPunchButtons();
             } else {
+                showToast(res.data, 'error');
                 alert('エラー: ' + res.data);
             }
         }).fail(function () {
@@ -361,7 +376,7 @@ jQuery(document).ready(function ($) {
         var hasClockin = !!status.has_clockin;
         var hasClockout = !!status.has_clockout;
         var isHoliday = !!status.is_holiday;
-
+        session.hasBreak = !!status.has_break;
         var $btnIn = $('.mat-wrap [data-label="出勤"]');
         var $btnOut = $('.mat-wrap [data-label="退勤"]');
 

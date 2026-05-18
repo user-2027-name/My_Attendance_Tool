@@ -159,6 +159,10 @@ function mat_attendance_update_handler() {
         }
 
         $time_val = ( $label === '休憩' ) ? sanitize_text_field( $_POST['break_hhmm'] ?? '00:00' ) : current_time( 'H:i' );
+        if ( $label === '退勤' && $parsed['has_clockout'] ) {
+            wp_send_json_error( '本日はすでに退勤打刻済みです。' );
+        }
+        
         if ( $label === '休憩' ) {
             $base     = preg_replace( '/\s*\|\s*休憩:\s*\d{2}:\d{2}/', '', $existing_row->item_name );
             $new_item = rtrim( $base ) . ' | 休憩: ' . $time_val;
@@ -366,11 +370,13 @@ function mat_parse_attendance_item_name( $item_name ) {
     }
 
     $has_meaningful_data = $is_holiday || $has_clockin || $has_clockout || $has_break_time || $has_notes;
-
+    $has_break    = (bool) preg_match( '/休憩:\s*(\d{2}:\d{2})/', $item, $br_m );
+    $has_break_time = $has_break && isset( $br_m[1] ) && $br_m[1] !== '00:00';
     return array(
         'is_holiday'          => $is_holiday,
         'has_clockin'         => $has_clockin,
         'has_clockout'        => $has_clockout,
+        'has_break'           => $has_break,
         'has_break_time'      => $has_break_time,
         'has_notes'           => $has_notes,
         'has_meaningful_data' => $has_meaningful_data,

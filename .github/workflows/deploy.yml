@@ -20,7 +20,7 @@ jobs:
           server-dir: /xs969605.xsrv.jp/public_html/inhouse/wp-content/plugins/My_Attendance_Tool/
 
   deploy-staging:
-    if: github.ref == 'refs/heads/staging' || startsWith(github.ref, 'refs/heads/feature/')
+    if: github.ref == 'refs/heads/staging'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
